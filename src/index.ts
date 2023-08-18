@@ -30,23 +30,43 @@ export type Promisified<C> = { $: C } & {
     : never
 }
 
-export function promisify<C extends Client>(client: C): Promisified<C> {
+interface PromisifyOption<C> {
+  wrapError?(
+    err: ServiceError,
+    target: C,
+    p: string | symbol,
+    args: any[],
+  ): ServiceError
+}
+
+export function promisify<C extends Client>(
+  client: C,
+  opt: PromisifyOption<C> = {},
+): Promisified<C> {
+  const clientName = client.constructor.name
+
   return new Proxy(client, {
-    get: (target, descriptor) => {
-      if (descriptor === '$') {
+    get: (target, p) => {
+      if (p === '$') {
         return target
       }
 
-      return (...args: any[]) =>
-        new Promise((resolve, reject) =>
-          (target as any)[descriptor](
-            ...[
-              ...args,
-              (err: ServiceError, res: Message) =>
-                err ? reject(err) : resolve(res),
-            ],
-          ),
-        )
+      return (...args: any[]) => {
+        return new Promise((resolve, reject) => {
+          const method: Function = (target as any)[p]
+          const callback = (err: ServiceError, res: Message) => {
+            if (err) {
+              return reject(
+                opt.wrapError ? opt.wrapError(err, target, p, args) : err,
+              )
+            }
+
+            resolve(res)
+          }
+
+          method.apply(target, [...args, callback])
+        })
+      }
     },
   }) as unknown as Promisified<C>
 }
