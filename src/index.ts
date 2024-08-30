@@ -8,26 +8,25 @@ import type {
 import type { Message } from 'google-protobuf'
 
 // refer: https://gist.github.com/smnbbrv/f147fceb4c29be5ce877b6275018e294
-type OriginalCall<T, U> = (
+type UnaryCall<T, U> = (
   request: T,
   metadata: Metadata,
   options: Partial<CallOptions>,
   callback: (error: ServiceError | null, res: U) => void,
 ) => ClientUnaryCall
 
-type PromisifiedCall<T, U> = (
+type PromisifiedUnaryCall<T, U> = (
   request: T,
   metadata?: Metadata,
   options?: Partial<CallOptions>,
 ) => Promise<U>
 
-export type Promisified<C> = { $: C } & {
-  [prop in Exclude<keyof C, keyof Client>]: C[prop] extends OriginalCall<
-    infer T,
-    infer U
-  >
-    ? PromisifiedCall<T, U>
-    : never
+type PromisifiedMethod<T> = T extends UnaryCall<infer U, infer V>
+  ? PromisifiedUnaryCall<U, V>
+  : T
+
+export type Promisified<C> = {
+  [K in Exclude<keyof C, keyof Client>]: PromisifiedMethod<C[K]>
 }
 
 interface PromisifyOption<C> {
@@ -39,11 +38,21 @@ interface PromisifyOption<C> {
   ): ServiceError
 }
 
+const clientKeys = new Set<string | symbol>([
+  'close',
+  'getChannel',
+  'waitForReady',
+  'makeUnaryRequest',
+  'makeClientStreamRequest',
+  'makeServerStreamRequest',
+  'makeBidiStreamRequest',
+])
+
 export function promisify<C extends Client>(
   client: C,
   opt: PromisifyOption<C> = {},
 ): Promisified<C> {
-  const clientName = client.constructor.name
+  const cachedMethods = new Map<string | symbol, any>()
 
   return new Proxy(client, {
     get: (target, p) => {
@@ -51,22 +60,40 @@ export function promisify<C extends Client>(
         return target
       }
 
-      return (...args: any[]) => {
+      const method: any = (target as any)[p]
+      if (clientKeys.has(p)) return method
+
+      const cachedMethod = cachedMethods.get(p)
+      if (cachedMethod) return cachedMethod
+
+      if (!method) return method
+
+      const isStreamCall = method.requestStream || method.responseStream
+
+      if (isStreamCall) {
+        const wrappedMethod = method.bind(target)
+        cachedMethods.set(p, wrappedMethod)
+        return wrappedMethod
+      }
+
+      const wrappedMethod = function wrappedMethod(...argArray: any[]) {
         return new Promise((resolve, reject) => {
-          const method: Function = (target as any)[p]
           const callback = (err: ServiceError, res: Message) => {
             if (err) {
               return reject(
-                opt.wrapError ? opt.wrapError(err, target, p, args) : err,
+                opt.wrapError ? opt.wrapError(err, target, p, argArray) : err,
               )
             }
 
             resolve(res)
           }
 
-          method.apply(target, [...args, callback])
+          method.apply(target, [...argArray, callback])
         })
       }
+
+      cachedMethods.set(p, wrappedMethod)
+      return wrappedMethod
     },
   }) as unknown as Promisified<C>
 }
