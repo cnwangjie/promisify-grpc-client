@@ -1,7 +1,4 @@
 {
-  "ts-node": {
-    "transpileOnly": true,
-  },
   "compilerOptions": {
     "strict": true,
     "alwaysStrict": true,

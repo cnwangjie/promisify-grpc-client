@@ -48,32 +48,57 @@ const clientKeys = new Set<string | symbol>([
   'makeBidiStreamRequest',
 ])
 
+const promisifiedSymbol = Symbol('promisified')
+
+const isAttrs = (
+  o: unknown,
+): o is { path: string; requestStream: boolean; responseStream: boolean } => {
+  return o != null && typeof o === 'object' && !!(o as any).path
+}
+
+const getAttrs = (o: any, p: string) => {
+  if (isAttrs(o[p])) return o[p]
+  const proto = o.__proto__
+  if (isAttrs(proto?.[p])) return proto[p]
+  const constructorService = o.constructor?.service
+  if (isAttrs(constructorService?.[p])) return constructorService[p]
+}
+
 export function promisify<C extends Client>(
   client: C,
   opt: PromisifyOption<C> = {},
 ): Promisified<C> {
   const cachedMethods = new Map<string | symbol, any>()
 
+  if ((client as any)[promisifiedSymbol]) {
+    return client as unknown as Promisified<C>
+  }
+
   return new Proxy(client, {
     get: (target, p) => {
+      if (p === promisifiedSymbol) {
+        return true
+      }
+
       if (p === '$') {
         return target
       }
 
-      const method: any = (target as any)[p]
-      if (clientKeys.has(p)) return method
-
       const cachedMethod = cachedMethods.get(p)
       if (cachedMethod) return cachedMethod
 
+      const method: any = (target as any)[p]
+      if (clientKeys.has(p)) return method
+
       if (!method) return method
 
-      const isStreamCall = method.requestStream || method.responseStream
+      const attrs = getAttrs(target, p as string)
+      if (!attrs) return method
+
+      const isStreamCall = attrs.requestStream || attrs.responseStream
 
       if (isStreamCall) {
-        const wrappedMethod = method.bind(target)
-        cachedMethods.set(p, wrappedMethod)
-        return wrappedMethod
+        return method
       }
 
       const wrappedMethod = function wrappedMethod(...argArray: any[]) {
@@ -93,6 +118,7 @@ export function promisify<C extends Client>(
       }
 
       cachedMethods.set(p, wrappedMethod)
+      Object.assign(wrappedMethod, attrs)
       return wrappedMethod
     },
   }) as unknown as Promisified<C>
